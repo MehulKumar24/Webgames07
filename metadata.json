@@ -1,0 +1,6 @@
+{
+  "name": "PROTOCOL: APEX - Tactical Hero FPS",
+  "description": "Original mobile-first 3D tactical hero shooter featuring 12 unique agents, 20+ weapons, competitive maps, 5v5 tactical plant, smart bots, and customizable touch controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
