@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import { 
   GameMode, 
   MapData, 
@@ -16,17 +16,19 @@ import {
 import { AGENTS } from './data/agents';
 import { WEAPONS } from './data/weapons';
 import { MAPS } from './data/maps';
-import { GameEngine, RadarTelemetry } from './engine/gameEngine';
-import { MainMenu } from './components/MainMenu';
-import { AgentSelect } from './components/AgentSelect';
-import { ArmoryView } from './components/ArmoryView';
-import { SettingsModal } from './components/SettingsModal';
+import type { GameEngine, RadarTelemetry } from './engine/gameEngine';
+const MainMenu = lazy(() => import('./components/MainMenu').then(module => ({ default: module.MainMenu })));
+const AgentSelect = lazy(() => import('./components/AgentSelect').then(module => ({ default: module.AgentSelect })));
+const ArmoryView = lazy(() => import('./components/ArmoryView').then(module => ({ default: module.ArmoryView })));
+const SettingsModal = lazy(() => import('./components/SettingsModal').then(module => ({ default: module.SettingsModal })));
 import { DesktopHUD } from './components/DesktopHUD';
 import { TouchHUD } from './components/TouchHUD';
 import { BuyMenu } from './components/BuyMenu';
 import { ScoreboardModal } from './components/ScoreboardModal';
 import { TacticalFullMapModal } from './components/TacticalMap';
-import { MatchSummaryScreen } from './components/MatchSummaryScreen';
+const MatchSummaryScreen = lazy(() =>
+  import('./components/MatchSummaryScreen').then(module => ({ default: module.MatchSummaryScreen }))
+);
 import { soundEngine } from './audio/soundEngine';
 import { pickRandomVoiceLine } from './data/voiceLines';
 import { Menu, Smartphone, Monitor, Trophy } from 'lucide-react';
@@ -35,6 +37,88 @@ import { Menu, Smartphone, Monitor, Trophy } from 'lucide-react';
 function clonePlayerData(data: MatchPlayer): MatchPlayer {
   return JSON.parse(JSON.stringify(data)) as MatchPlayer;
 }
+
+function areRadarStatesEqual(a: RadarTelemetry | null, b: RadarTelemetry): boolean {
+  if (!a) return false;
+  const samePosition = (
+    left: { x: number; z: number } | null | undefined,
+    right: { x: number; z: number } | null | undefined
+  ) => left === right || (!!left && !!right && left.x === right.x && left.z === right.z);
+  const sameArray = <T,>(left: T[], right: T[], equals: (a: T, b: T) => boolean) =>
+    left.length === right.length && left.every((item, index) => equals(item, right[index]));
+
+  return (
+    a.playerX === b.playerX &&
+    a.playerZ === b.playerZ &&
+    a.playerYaw === b.playerYaw &&
+    a.currentCallout === b.currentCallout &&
+    a.spikeCarrierId === b.spikeCarrierId &&
+    samePosition(a.spikePosition, b.spikePosition) &&
+    samePosition(a.droppedSpikePosition, b.droppedSpikePosition) &&
+    sameArray(a.walls, b.walls, (left, right) =>
+      left.minX === right.minX &&
+      left.minZ === right.minZ &&
+      left.maxX === right.maxX &&
+      left.maxZ === right.maxZ &&
+      left.isWall === right.isWall &&
+      left.isCover === right.isCover &&
+      left.isExplosiveBarrel === right.isExplosiveBarrel
+    ) &&
+    sameArray(a.blips, b.blips, (left, right) =>
+      left.id === right.id &&
+      left.name === right.name &&
+      left.agentId === right.agentId &&
+      left.team === right.team &&
+      left.x === right.x &&
+      left.z === right.z &&
+      left.yaw === right.yaw &&
+      left.isAlive === right.isAlive &&
+      left.isPlayer === right.isPlayer &&
+      left.isSpotted === right.isSpotted &&
+      left.health === right.health &&
+      left.fsmState === right.fsmState
+    ) &&
+    sameArray(a.abilities, b.abilities, (left, right) =>
+      left.id === right.id &&
+      left.type === right.type &&
+      left.team === right.team &&
+      left.x === right.x &&
+      left.z === right.z
+    ) &&
+    sameArray(a.pings, b.pings, (left, right) =>
+      left.id === right.id &&
+      left.x === right.x &&
+      left.z === right.z &&
+      left.label === right.label &&
+      left.createdAt === right.createdAt
+    )
+  );
+}
+
+type HudSnapshot = {
+  currentAmmo: number;
+  reserveAmmo: number;
+  isReloading: boolean;
+  isAds: boolean;
+  isCrouched: boolean;
+  isSliding: boolean;
+  isSprinting: boolean;
+  activeWeapon: Weapon | null;
+  primaryWeapon: Weapon | null;
+  sidearmWeapon: Weapon | null;
+  meleeWeapon: Weapon | null;
+  roundTime: number;
+  buyPhaseTime: number;
+  roundNumber: number;
+  targetWins: number;
+  isOvertime: boolean;
+  playerDataSignature: string;
+  allPlayersSignature: string;
+  radarData: RadarTelemetry | null;
+  isInspecting: boolean;
+  isPointerLocked: boolean;
+  isInBombSite: boolean;
+};
 
 export default function App() {
   // Navigation & Screen View State
@@ -100,7 +184,16 @@ export default function App() {
   // Game Runtime State
   const canvasMountRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
-  const lastHudValues = useRef<any>({
+  const uiTimeouts = useRef(new Set<number>());
+  const scheduleUiTimeout = (callback: () => void, delay: number) => {
+    const timeoutId = window.setTimeout(() => {
+      uiTimeouts.current.delete(timeoutId);
+      callback();
+    }, delay);
+    uiTimeouts.current.add(timeoutId);
+    return timeoutId;
+  };
+  const lastHudValues = useRef<HudSnapshot>({
     currentAmmo: -1,
     reserveAmmo: -1,
     isReloading: false,
@@ -117,8 +210,8 @@ export default function App() {
     roundNumber: -1,
     targetWins: -1,
     isOvertime: false,
-    playerData: null,
-    allPlayersLen: -1,
+    playerDataSignature: '',
+    allPlayersSignature: '',
     radarData: null,
     isInspecting: false,
     isPointerLocked: false,
@@ -221,6 +314,13 @@ export default function App() {
     );
   }, [audioSettings]);
 
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.controlsSettings = controlsSettings;
+    engine.graphicsSettings = graphicsSettings;
+  }, [controlsSettings, graphicsSettings]);
+
   // Start game session
   const startGame = () => {
     soundEngine.init();
@@ -238,12 +338,19 @@ export default function App() {
   useEffect(() => {
     if (currentView !== 'playing' || !canvasMountRef.current) return;
 
+    let cancelled = false;
+    let engineInstance: GameEngine | null = null;
+    let hudInterval: number | undefined;
+
+    void import('./engine/gameEngine').then(({ GameEngine: GameEngineClass }) => {
+      if (cancelled || !canvasMountRef.current) return;
+
     const mount = canvasMountRef.current;
     while (mount.children.length > 0) {
       mount.removeChild(mount.children[0]);
     }
 
-    const engine = new GameEngine(
+    const engine = new GameEngineClass(
       mount,
       selectedMap,
       selectedMode,
@@ -263,7 +370,7 @@ export default function App() {
           }
           if (message) {
             setRoundMessage(message);
-            setTimeout(() => setRoundMessage(''), 4200);
+            scheduleUiTimeout(() => setRoundMessage(''), 4200);
           }
         },
         onPlayerStatsChange: (pData) => {
@@ -271,13 +378,13 @@ export default function App() {
         },
         onKillFeed: (entry) => {
           setKillFeed(prev => [...prev.slice(-3), entry]);
-          setTimeout(() => {
+          scheduleUiTimeout(() => {
             setKillFeed(prev => prev.filter(k => k.id !== entry.id));
           }, 2600);
         },
         onDamageNumber: (dmg) => {
           setDamageNumbers(prev => [...prev.slice(-4), dmg]);
-          setTimeout(() => {
+          scheduleUiTimeout(() => {
             setDamageNumbers(prev => prev.filter(d => d.id !== dmg.id));
           }, 1200);
         },
@@ -290,7 +397,7 @@ export default function App() {
         },
         onPlayerTakeDamage: () => {
           setIsTakingDamage(true);
-          setTimeout(() => setIsTakingDamage(false), 200);
+          scheduleUiTimeout(() => setIsTakingDamage(false), 200);
         },
         onBuyMenuToggle: (open) => {
           setIsBuyMenuOpen(open);
@@ -300,7 +407,7 @@ export default function App() {
         },
         onMultikill: (text) => {
           setMultikillBanner(text);
-          setTimeout(() => {
+          scheduleUiTimeout(() => {
             setMultikillBanner(null);
           }, 2400);
         },
@@ -312,7 +419,7 @@ export default function App() {
         },
         onHitmarker: (isHeadshot) => {
           setHitmarker({ active: true, isHeadshot });
-          setTimeout(() => {
+          scheduleUiTimeout(() => {
             setHitmarker({ active: false, isHeadshot: false });
           }, 180);
         },
@@ -335,6 +442,7 @@ export default function App() {
       botDifficulty
     );
 
+    engineInstance = engine;
     engineRef.current = engine;
     engine.start();
 
@@ -346,64 +454,122 @@ export default function App() {
     setRadarData(engine.getRadarState());
 
     // Sync loop for HUD telemetry
-    const hudInterval = setInterval(() => {
-      if (!engine) return;
-      const engineRef = engine;
+    hudInterval = window.setInterval(() => {
+      const currentEngine = engine;
+      if (!currentEngine) return;
 
       // Only update React state when values actually change
-      if (engineRef.currentAmmo !== lastHudValues.current.currentAmmo) setCurrentAmmo(engineRef.currentAmmo);
-      if (engineRef.reserveAmmo !== lastHudValues.current.reserveAmmo) setReserveAmmo(engineRef.reserveAmmo);
-      if (engineRef.isReloading !== lastHudValues.current.isReloading) setIsReloading(engineRef.isReloading);
-      if (engineRef.isAds !== lastHudValues.current.isAds) setIsAds(engineRef.isAds);
-      if (engineRef.isCrouched !== lastHudValues.current.isCrouched) setIsCrouched(engineRef.isCrouched);
-      if (engineRef.isSliding !== lastHudValues.current.isSliding) setIsSliding(engineRef.isSliding);
-      if (engineRef.isSprinting !== lastHudValues.current.isSprinting) setIsSprinting(engineRef.isSprinting);
-      if (engineRef.currentWeapon !== lastHudValues.current.activeWeapon) {
-        setActiveWeapon(engineRef.currentWeapon);
-        lastHudValues.current.activeWeapon = engineRef.currentWeapon;
+      if (currentEngine.currentAmmo !== lastHudValues.current.currentAmmo) {
+        setCurrentAmmo(currentEngine.currentAmmo);
+        lastHudValues.current.currentAmmo = currentEngine.currentAmmo;
       }
-      if (engineRef.primaryWeapon !== lastHudValues.current.primaryWeapon) {
-        setSelectedWeapon(engineRef.primaryWeapon);
-        lastHudValues.current.primaryWeapon = engineRef.primaryWeapon;
+      if (currentEngine.reserveAmmo !== lastHudValues.current.reserveAmmo) {
+        setReserveAmmo(currentEngine.reserveAmmo);
+        lastHudValues.current.reserveAmmo = currentEngine.reserveAmmo;
       }
-      if (engineRef.sidearmWeapon !== lastHudValues.current.sidearmWeapon) {
-        setSidearmWeapon(engineRef.sidearmWeapon);
-        lastHudValues.current.sidearmWeapon = engineRef.sidearmWeapon;
+      if (currentEngine.isReloading !== lastHudValues.current.isReloading) {
+        setIsReloading(currentEngine.isReloading);
+        lastHudValues.current.isReloading = currentEngine.isReloading;
       }
-      if (engineRef.meleeWeapon !== lastHudValues.current.meleeWeapon) {
-        setMeleeWeapon(engineRef.meleeWeapon);
-        lastHudValues.current.meleeWeapon = engineRef.meleeWeapon;
+      if (currentEngine.isAds !== lastHudValues.current.isAds) {
+        setIsAds(currentEngine.isAds);
+        lastHudValues.current.isAds = currentEngine.isAds;
       }
-      if (engineRef.roundTimeRemaining !== lastHudValues.current.roundTime) setRoundTime(engineRef.roundTimeRemaining);
-      if (engineRef.buyPhaseTime !== lastHudValues.current.buyPhaseTime) setBuyPhaseTime(engineRef.buyPhaseTime);
-      if (engineRef.roundNumber !== lastHudValues.current.roundNumber) setRoundNumber(engineRef.roundNumber);
-      if (engineRef.targetWins !== lastHudValues.current.targetWins) setTargetWins(engineRef.targetWins);
-      if (engineRef.isOvertime !== lastHudValues.current.isOvertime) setIsOvertime(engineRef.isOvertime);
-      if (engineRef.playerMatchData !== lastHudValues.current.playerData) {
-        setPlayerData(clonePlayerData(engineRef.playerMatchData));
-        lastHudValues.current.playerData = engineRef.playerMatchData;
+      if (currentEngine.isCrouched !== lastHudValues.current.isCrouched) {
+        setIsCrouched(currentEngine.isCrouched);
+        lastHudValues.current.isCrouched = currentEngine.isCrouched;
       }
-      if (engineRef.allPlayers.length !== lastHudValues.current.allPlayersLen) setAllPlayers([...engineRef.allPlayers]);
-      if (engineRef.getRadarState() !== lastHudValues.current.radarData) {
-        setRadarData(engineRef.getRadarState());
-        lastHudValues.current.radarData = engineRef.getRadarState();
+      if (currentEngine.isSliding !== lastHudValues.current.isSliding) {
+        setIsSliding(currentEngine.isSliding);
+        lastHudValues.current.isSliding = currentEngine.isSliding;
       }
-      if (engineRef.isInspecting !== lastHudValues.current.isInspecting) setIsInspecting(engineRef.isInspecting);
-      if (engineRef.isPointerLocked !== lastHudValues.current.isPointerLocked) setIsPointerLocked(engineRef.isPointerLocked);
-    }, 90);
+      if (currentEngine.isSprinting !== lastHudValues.current.isSprinting) {
+        setIsSprinting(currentEngine.isSprinting);
+        lastHudValues.current.isSprinting = currentEngine.isSprinting;
+      }
+      if (currentEngine.currentWeapon !== lastHudValues.current.activeWeapon) {
+        setActiveWeapon(currentEngine.currentWeapon);
+        lastHudValues.current.activeWeapon = currentEngine.currentWeapon;
+      }
+      if (currentEngine.primaryWeapon !== lastHudValues.current.primaryWeapon) {
+        setSelectedWeapon(currentEngine.primaryWeapon);
+        lastHudValues.current.primaryWeapon = currentEngine.primaryWeapon;
+      }
+      if (currentEngine.sidearmWeapon !== lastHudValues.current.sidearmWeapon) {
+        setSidearmWeapon(currentEngine.sidearmWeapon);
+        lastHudValues.current.sidearmWeapon = currentEngine.sidearmWeapon;
+      }
+      if (currentEngine.meleeWeapon !== lastHudValues.current.meleeWeapon) {
+        setMeleeWeapon(currentEngine.meleeWeapon);
+        lastHudValues.current.meleeWeapon = currentEngine.meleeWeapon;
+      }
+      if (currentEngine.roundTimeRemaining !== lastHudValues.current.roundTime) {
+        setRoundTime(currentEngine.roundTimeRemaining);
+        lastHudValues.current.roundTime = currentEngine.roundTimeRemaining;
+      }
+      if (currentEngine.buyPhaseTime !== lastHudValues.current.buyPhaseTime) {
+        setBuyPhaseTime(currentEngine.buyPhaseTime);
+        lastHudValues.current.buyPhaseTime = currentEngine.buyPhaseTime;
+      }
+      if (currentEngine.roundNumber !== lastHudValues.current.roundNumber) {
+        setRoundNumber(currentEngine.roundNumber);
+        lastHudValues.current.roundNumber = currentEngine.roundNumber;
+      }
+      if (currentEngine.targetWins !== lastHudValues.current.targetWins) {
+        setTargetWins(currentEngine.targetWins);
+        lastHudValues.current.targetWins = currentEngine.targetWins;
+      }
+      if (currentEngine.isOvertime !== lastHudValues.current.isOvertime) {
+        setIsOvertime(currentEngine.isOvertime);
+        lastHudValues.current.isOvertime = currentEngine.isOvertime;
+      }
+      const playerDataSignature = JSON.stringify(currentEngine.playerMatchData);
+      if (playerDataSignature !== lastHudValues.current.playerDataSignature) {
+        setPlayerData(clonePlayerData(currentEngine.playerMatchData));
+        lastHudValues.current.playerDataSignature = playerDataSignature;
+      }
+      const allPlayersSignature = JSON.stringify(currentEngine.allPlayers);
+      if (allPlayersSignature !== lastHudValues.current.allPlayersSignature) {
+        setAllPlayers([...currentEngine.allPlayers]);
+        lastHudValues.current.allPlayersSignature = allPlayersSignature;
+      }
+      const nextRadarData = currentEngine.getRadarState();
+      if (!areRadarStatesEqual(lastHudValues.current.radarData, nextRadarData)) {
+        setRadarData(nextRadarData);
+        lastHudValues.current.radarData = nextRadarData;
+      }
+      if (currentEngine.isInspecting !== lastHudValues.current.isInspecting) {
+        setIsInspecting(currentEngine.isInspecting);
+        lastHudValues.current.isInspecting = currentEngine.isInspecting;
+      }
+      if (currentEngine.isPointerLocked !== lastHudValues.current.isPointerLocked) {
+        setIsPointerLocked(currentEngine.isPointerLocked);
+        lastHudValues.current.isPointerLocked = currentEngine.isPointerLocked;
+      }
 
       // Bomb-site proximity check
-      const pos = engine.playerPosition;
+      const pos = currentEngine.playerPosition;
       const distA = Math.hypot(pos.x - selectedMap.siteA.x, pos.z - selectedMap.siteA.z);
       const distB = Math.hypot(pos.x - selectedMap.siteB.x, pos.z - selectedMap.siteB.z);
       const inSite = distA <= selectedMap.siteA.radius || distB <= selectedMap.siteB.radius;
       if (inSite !== (lastHudValues.current.isInBombSite ?? false)) setIsInBombSite(inSite);
       lastHudValues.current.isInBombSite = inSite;
     }, 90);
+    }).catch(error => {
+      if (!cancelled) {
+        console.error('Failed to load the game engine:', error);
+        setCurrentView('menu');
+      }
+    });
 
     return () => {
-      clearInterval(hudInterval);
-      engine.stop();
+      cancelled = true;
+      if (hudInterval !== undefined) window.clearInterval(hudInterval);
+      for (const timeoutId of uiTimeouts.current) {
+        window.clearTimeout(timeoutId);
+      }
+      uiTimeouts.current.clear();
+      engineInstance?.stop();
       engineRef.current = null;
     };
   }, [currentView, selectedMap, selectedMode, selectedAgent, botDifficulty]);
@@ -448,6 +614,11 @@ export default function App() {
   };
 
   return (
+    <Suspense fallback={
+      <div className="flex h-screen items-center justify-center bg-slate-950 text-sm font-bold tracking-widest text-cyan-300">
+        LOADING PROTOCOL: APEX...
+      </div>
+    }>
     <div className="relative w-screen h-screen overflow-hidden bg-black select-none font-chakra">
       {/* 3D Canvas Mount (Active during match) */}
       <div 
@@ -889,5 +1060,6 @@ export default function App() {
         onUpdateAudio={setAudioSettings}
       />
     </div>
+    </Suspense>
   );
 }

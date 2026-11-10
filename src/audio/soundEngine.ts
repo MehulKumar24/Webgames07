@@ -66,7 +66,7 @@ class SoundEngine {
       this.sfxGain.connect(this.masterGain);
 
       this.voiceGain = this.ctx.createGain();
-      this.voiceGain.gain.setValueAtTime(this.voiceVolume * 0.6, this.ctx.currentTime);
+      this.voiceGain.gain.setValueAtTime(this.voiceVolume * 0.42, this.ctx.currentTime);
       this.voiceGain.connect(this.masterGain);
 
       this.musicGain = this.ctx.createGain();
@@ -97,7 +97,7 @@ class SoundEngine {
     this.masterGain.gain.setTargetAtTime(muted ? 0 : master * 0.65, now, 0.08);
     this.sfxGain.gain.setTargetAtTime(sfx * 0.35, now, 0.08);
     if (this.voiceGain) {
-      this.voiceGain.gain.setTargetAtTime(voice * 0.6, now, 0.08);
+      this.voiceGain.gain.setTargetAtTime(voice * 0.42, now, 0.08);
     }
     this.musicGain.gain.setTargetAtTime(music * 0.5, now, 0.08);
   }
@@ -132,7 +132,7 @@ class SoundEngine {
 
     const ctx = this.ctx;
     const now = ctx.currentTime;
-    const vol = Math.max(0.03, Math.min(0.65, volumeScale * 0.65));
+    const vol = Math.max(0.01, Math.min(0.42, volumeScale * 0.42));
 
     // Create noise burst for transient crack (smoothed with gentle taper to prevent ear fatigue)
     if (!this.gunshotNoiseBuffer || this.gunshotNoiseBuffer.sampleRate !== ctx.sampleRate) {
@@ -160,6 +160,7 @@ class SoundEngine {
     // Secondary sub-bass punch oscillator for cinematic depth
     const subOsc = ctx.createOscillator();
     const subGain = ctx.createGain();
+    subGain.gain.setValueAtTime(0, now);
 
     // Warm high-shelf safety roll-off to soften abrasive frequencies above 5.5kHz in headphones
     const earFatigueFilter = ctx.createBiquadFilter();
@@ -940,7 +941,7 @@ class SoundEngine {
 
     const ctx = this.ctx;
     const now = ctx.currentTime;
-    const profile = AGENT_VOICE_PROFILES[agent.id] || AGENT_VOICE_PROFILES['agent_vortex'];
+    const profile = AGENT_VOICE_PROFILES[agent.id] || AGENT_VOICE_PROFILES.agent_vortex;
     const targetGain = this.voiceGain;
 
     // 1. Subtle, clean military radio comms tone (soft click, zero abrasive hiss)
@@ -956,28 +957,13 @@ class SoundEngine {
         const utterance = new SpeechSynthesisUtterance(lineText);
         utterance.lang = profile.lang || 'en-US';
         // Confine pitch and rate to natural, human speech ranges (no chipmunk squeaks or slow robot drones)
-        utterance.pitch = Math.max(0.82, Math.min(1.08, profile.pitch));
-        utterance.rate = Math.max(0.88, Math.min(1.15, profile.rate));
-        utterance.volume = Math.min(0.5, Math.max(0, this.voiceVolume * 0.6));
+        utterance.pitch = Math.max(0.92, Math.min(1.06, profile.pitch));
+        utterance.rate = Math.max(0.92, Math.min(1.08, profile.rate));
+        utterance.volume = Math.min(0.42, Math.max(0, this.voiceVolume * 0.42));
 
         const voices = synth.getVoices();
-        if (voices.length > 0) {
-          const isFemale = agent.gender === 'Female';
-          const femaleHints = ['female', 'samantha', 'victoria', 'karen', 'zira', 'hazel', 'aria', 'jenny', 'natasha', 'susan', 'linda', 'serena', 'kyoko', 'amélie', 'amelie', 'anna'];
-          const maleHints = ['male', 'daniel', 'alex', 'david', 'mark', 'guy', 'james', 'richard', 'george', 'oliver', 'rishi', 'fred', 'aaron', 'arthur', 'jorge'];
-
-          // Prioritize high-quality natural voices (Google, Natural, Siri, Microsoft Online)
-          const naturalVoices = voices.filter(v => /natural|premium|online|google|enhanced|neural/i.test(v.name));
-          const targetPool = naturalVoices.length > 0 ? naturalVoices : voices;
-
-          const matchedByGender = targetPool.filter(v => {
-            const lower = v.name.toLowerCase();
-            return isFemale ? femaleHints.some(h => lower.includes(h)) : maleHints.some(h => lower.includes(h));
-          });
-
-          const candidates = matchedByGender.length > 0 ? matchedByGender : targetPool;
-          utterance.voice = candidates[profile.voiceIndexOffset % candidates.length];
-        }
+        const preferredVoice = this.selectSpeechVoice(voices, profile.lang, agent.gender);
+        if (preferredVoice) utterance.voice = preferredVoice;
 
         synth.speak(utterance);
       } catch {
@@ -990,6 +976,31 @@ class SoundEngine {
     this.playRadioSquelch(now + lineDurationEstimate, 0.02, 720);
 
     return true;
+  }
+
+  private selectSpeechVoice(
+    voices: SpeechSynthesisVoice[],
+    language: string,
+    gender: Agent['gender']
+  ): SpeechSynthesisVoice | undefined {
+    const languagePrefix = language.split('-')[0].toLowerCase();
+    const genderHints = gender === 'Female'
+      ? ['female', 'samantha', 'victoria', 'karen', 'zira', 'hazel', 'aria', 'jenny', 'natasha', 'susan', 'linda', 'serena', 'kyoko', 'amelie', 'anna']
+      : ['male', 'daniel', 'alex', 'david', 'mark', 'guy', 'james', 'richard', 'george', 'oliver', 'rishi', 'fred', 'aaron', 'arthur', 'jorge'];
+    const qualityHints = /natural|premium|online|google|enhanced|neural/i;
+
+    return voices
+      .map((voice, index) => {
+        const name = voice.name.toLowerCase();
+        const voiceLanguage = voice.lang.toLowerCase();
+        const score =
+          (voiceLanguage === language.toLowerCase() ? 4 : voiceLanguage.startsWith(`${languagePrefix}-`) ? 2 : 0) +
+          (genderHints.some(hint => name.includes(hint)) ? 2 : 0) +
+          (qualityHints.test(name) ? 3 : 0) +
+          (voice.default ? 1 : 0);
+        return { voice, index, score };
+      })
+      .sort((a, b) => b.score - a.score || a.index - b.index)[0]?.voice;
   }
 
   private playRadioSquelch(startTime: number, duration: number, filterFreq: number) {

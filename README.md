@@ -2,19 +2,17 @@
 <img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
 </div>
 
-# Run and deploy your AI Studio app
+# PROTOCOL: APEX — Tactical Hero FPS
 
-This contains everything you need to run your app locally.
+PROTOCOL: APEX is a client-side tactical hero shooter prototype built with React, TypeScript, Vite, and Three.js.
 
-View your app in AI Studio: https://ai.studio/apps/feb51d33-1748-4f2b-acfb-099f6d465a5a
-
-## Run Locally
+## Run locally
 
 **Prerequisites:**  Node.js
 
-
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
+2. Start the development server:
    `npm run dev`
+
+No Gemini API key or backend service is required by the current application.

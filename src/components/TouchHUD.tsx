@@ -136,6 +136,7 @@ export const TouchHUD: React.FC<TouchHUDProps> = ({
   // Fire-button drag-aim touch identifier (allows aiming while holding Fire!)
   const fireTouchId = useRef<number | null>(null);
   const lastFireLookPos = useRef({ x: 0, y: 0 });
+  const isMouseFireActive = useRef<boolean>(false);
   const onLookInputRef = useRef(onLookInput);
   useEffect(() => {
     onLookInputRef.current = onLookInput;

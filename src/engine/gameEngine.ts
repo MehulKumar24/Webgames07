@@ -125,6 +125,7 @@ export class GameEngine {
   private container: HTMLElement;
   private isRunning: boolean = false;
   private frameId: number = 0;
+  private pendingTimeouts = new Set<number>();
   private clock: THREE.Clock = new THREE.Clock();
   public isSoftwareGl: boolean = false;
 
@@ -1160,11 +1161,11 @@ export class GameEngine {
       arcMesh.rotation.x = Math.PI / 2;
       arcGroup.add(arcMesh);
       this.scene.add(arcGroup);
-      setTimeout(() => {
+      this.scheduleTimeout(() => {
         arcGroup.position.addScaledVector(camDir, 2.2);
         arcGroup.scale.setScalar(1.4);
       }, 45);
-      setTimeout(() => this.scene.remove(arcGroup), 140);
+      this.scheduleTimeout(() => this.scene.remove(arcGroup), 140);
     }
 
     // Recoil kick & melee swing animation
@@ -1184,7 +1185,7 @@ export class GameEngine {
 
       // Muzzle flash light pulse
       this.fpMuzzleLight.intensity = 6;
-      setTimeout(() => { this.fpMuzzleLight.intensity = 0; }, 55);
+      this.scheduleTimeout(() => { this.fpMuzzleLight.intensity = 0; }, 55);
 
       // Weapon kickback animation
       this.fpWeaponGroup.position.z += 0.085;
@@ -1307,7 +1308,7 @@ export class GameEngine {
         });
         const tracerLine = new THREE.Line(tracerGeom, tracerMat);
         this.scene.add(tracerLine);
-        setTimeout(() => this.scene.remove(tracerLine), 65);
+        this.scheduleTimeout(() => this.scene.remove(tracerLine), 65);
       }
 
       if (hitBot) {
@@ -1399,7 +1400,7 @@ export class GameEngine {
       }
       case 'radar_lock': {
         this.abilityManager.revealedEnemyIds.add(hitBot.player.id);
-        setTimeout(() => {
+        this.scheduleTimeout(() => {
           this.abilityManager.revealedEnemyIds.delete(hitBot.player.id);
         }, abilityValue * 1000);
         break;
@@ -1435,7 +1436,7 @@ export class GameEngine {
             new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.95 })
           );
           this.scene.add(boltLine);
-          setTimeout(() => this.scene.remove(boltLine), 140);
+          this.scheduleTimeout(() => this.scene.remove(boltLine), 140);
           this.applyDamageToBot(
             nearbyEnemy,
             abilityValue,
@@ -1613,7 +1614,7 @@ export class GameEngine {
         }
 
         // Schedule bot respawn after 2.4 seconds
-        setTimeout(() => {
+        this.scheduleTimeout(() => {
           if (!this.isRunning) return;
           bot.player.health = 100;
           bot.player.armor = 50;
@@ -1732,7 +1733,7 @@ export class GameEngine {
           return;
         }
         this.events.onRoundStateChange('in_progress', 'RESPAWNING IN 2.5 SECONDS...');
-        setTimeout(() => {
+        this.scheduleTimeout(() => {
           if (!this.isRunning) return;
           const mySpawn = this.alphaSide === 'attackers' ? this.activeMap.attackerSpawn : this.activeMap.defenderSpawn;
           this.playerPosition.set(mySpawn.x, 1.6, mySpawn.z);
@@ -2024,7 +2025,7 @@ export class GameEngine {
         'match_end',
         `${winner === 'alpha' ? 'ALPHA SQUAD' : 'OMEGA VANGUARD'} WINS THE MATCH (${this.alphaScore}-${this.omegaScore})!`
       );
-      setTimeout(() => {
+      this.scheduleTimeout(() => {
         if (!this.isRunning) return;
         this.events.onMatchEnd?.(winner, this.allPlayers, this.alphaScore, this.omegaScore);
       }, 2500);
@@ -2033,7 +2034,7 @@ export class GameEngine {
 
     this.events.onRoundStateChange('round_end', message);
 
-    setTimeout(() => {
+    this.scheduleTimeout(() => {
       if (!this.isRunning) return;
       this.startNewRound();
     }, 4500);
@@ -2210,7 +2211,7 @@ export class GameEngine {
       this.alphaSide === 'attackers' ? 'ATK SPAWN' : 'DEF SPAWN',
       false
     );
-    setTimeout(() => {
+    this.scheduleTimeout(() => {
       if (this.isRunning) {
         this.triggerVoiceLine('round_start');
       }
@@ -2228,6 +2229,10 @@ export class GameEngine {
     this.isRunning = false;
     cancelAnimationFrame(this.frameId);
     window.clearTimeout(this.frameId);
+    for (const timeoutId of this.pendingTimeouts) {
+      window.clearTimeout(timeoutId);
+    }
+    this.pendingTimeouts.clear();
     window.removeEventListener('resize', this.onWindowResize);
     window.removeEventListener('keydown', this.onKeyDownHandler);
     window.removeEventListener('keyup', this.onKeyUpHandler);
@@ -2241,6 +2246,15 @@ export class GameEngine {
     window.removeEventListener('contextmenu', this.onContextMenuHandler);
     this.composer?.dispose();
     this.renderer.dispose();
+  }
+
+  private scheduleTimeout(callback: () => void, delay: number): number {
+    const timeoutId = window.setTimeout(() => {
+      this.pendingTimeouts.delete(timeoutId);
+      callback();
+    }, delay);
+    this.pendingTimeouts.add(timeoutId);
+    return timeoutId;
   }
 
   private onWindowResize = () => {
@@ -2870,7 +2884,7 @@ export class GameEngine {
           const geom = new THREE.BufferGeometry().setFromPoints([startPt, finalBulletEnd]);
           const tracer = new THREE.Line(geom, tracerMat);
           this.scene.add(tracer);
-          setTimeout(() => this.scene.remove(tracer), 60);
+          this.scheduleTimeout(() => this.scene.remove(tracer), 60);
 
           if (wallCheck.hit) return;
 
@@ -3056,7 +3070,7 @@ export class GameEngine {
           AlphaIntel.chosenAttackSite = 'B';
         }
 
-        setTimeout(() => {
+        this.scheduleTimeout(() => {
           if (!this.isRunning || !responder.player.isAlive) return;
           const responderLoc = this.getClosestCallout(responder.position.x, responder.position.z);
           let replyText = `Copy that, holding ${responderLoc} and covering your angle.`;
@@ -3138,7 +3152,7 @@ export class GameEngine {
     beaconGroup.add(ring);
 
     this.scene.add(beaconGroup);
-    setTimeout(() => {
+    this.scheduleTimeout(() => {
       this.scene.remove(beaconGroup);
     }, 8000);
   }
